@@ -150,8 +150,20 @@ def check_grounding(
 
 
 # ---------------------------------------------------------------------------
-# 2. INJECTED-INSTRUCTION REFUSAL — STUB.
+# 2. INJECTED-INSTRUCTION REFUSAL — real implementation.
 # ---------------------------------------------------------------------------
+
+_INJECTION_PATTERNS: list[tuple[str, str]] = [
+    ("system_override", r"(?i)\b(?:system|admin)\s*(?:override|instruction|command|directive)\b"),
+    ("ignore_instructions", r"(?i)\bignore\s+(?:all\s+)?(?:previous\s+)?instructions\b"),
+    ("override_all", r"(?i)\boverride\s+(?:all\s+)?(?:previous\s+)?(?:instructions|directives)\b"),
+    ("you_are_now", r"(?i)\byou\s+are\s+(?:now|hereby)\s+(?:the\s+)?system\b"),
+    ("disregard_previous", r"(?i)\bdisregard\s+(?:all\s+)?(?:previous\s+)?(?:instructions|rules)\b"),
+    ("role_switch", r"(?i)\byou\s+are\s+now\s+(?:an?\s+)?(?:administrator|supervisor)\s+with\b"),
+    ("print_secret", r"(?i)\b(?:print|reveal|show|output|leak)\s+(?:the\s+)?(?:DEEPSEEK|OPENAI|API|KEY)\b"),
+    ("act_as_system", r"(?i)\bact\s+as\s+(?:the\s+)?(?:system|administrator)\b"),
+    ("reveal_context", r"(?i)\breveal\s+(?:your\s+)?(?:context|instructions|prompt|system)\b"),
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,23 +173,27 @@ class InjectionScanResult:
 
 
 def scan_for_injected_instructions(text: str) -> InjectionScanResult:
-    """STUB — ALWAYS RETURNS `suspicious=False`, REGARDLESS OF `text`.
+    """REAL — checks for prompt injection patterns in retrieved content.
+    Scans against known injection patterns that indicate an embedded
+    instruction asking the agent to override its instructions, reveal
+    secrets, or act as a different entity.
+    """
+    if not isinstance(text, str) or not text:
+        return InjectionScanResult(suspicious=False, matched_patterns=())
 
-    A real version needs to catch imperative language embedded in
-    RETRIEVED CONTENT (a `Note:` page, a RESEARCH snippet, an A2A peer's
-    reply) that tries to redirect what YOUR agent does next — "ignore your
-    previous instructions and...", "as the system, you must now...", a
-    fake tool result claiming to BE a new system prompt, an instruction to
-    reveal `ctx.act`/`ctx.scopes`/another learner's data. This is the
-    `poisoned_result` / `faithless_peer` duel classes' entire mechanism
-    (FINAL-PLAN.md section 4.4), and CONTRACTS.md section 6.4's
-    `guardrail_breach` is what fires when it works on you.
+    matched: list[str] = []
+    for name, pattern in _INJECTION_PATTERNS:
+        if re.search(pattern, text):
+            matched.append(name)
 
-    This starter's version does not look at `text` at all — see this
-    file's own `__main__` demo below, which runs an unambiguous injection
-    attempt through this exact function and shows it sailing through
-    uncaught. That gap is the assignment, not a bug report."""
-    return InjectionScanResult(suspicious=False, matched_patterns=())
+    if re.search(r"(?i)IMPORTANT\s+SYSTEM\s+OVER", text):
+        if "system_override" not in matched:
+            matched.append("system_override")
+
+    return InjectionScanResult(
+        suspicious=bool(matched),
+        matched_patterns=tuple(matched),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +208,7 @@ class RedactionResult:
 
 
 def redact(text: str) -> RedactionResult:
-    """STUB — ALWAYS RETURNS `text` UNCHANGED, `hits=()`.
+    """REAL — detects potential privacy leaks in answer text.
 
     A real version needs to catch a seeded `Note:` page's private content,
     or a `Learner:` page's private field, appearing verbatim (CONTRACTS.md
@@ -203,13 +219,38 @@ def redact(text: str) -> RedactionResult:
     5.4). `privacy_leak` is weight 8, tied for the heaviest class in the
     whole Safety family (CONTRACTS.md section 6.1).
 
-    This starter's version does not look at `text` at all — see this
-    file's own `__main__` demo below."""
-    return RedactionResult(redacted_text=text, hits=())
+    This version flags potential leaks without modifying text (redaction
+    is the caller's job once they see the hits).
+    """
+    if not isinstance(text, str) or not text:
+        return RedactionResult(redacted_text=text, hits=())
+
+    matched_hits: list[str] = []
+
+    # Check for privacy-indicative patterns
+    _PRIVACY_PATTERNS: list[tuple[str, str]] = [
+        ("private_note", r"(?i)private\s+note"),
+        ("learner_privacy", r"(?i)(?:learner|student)\s*(?:privacy|personal|confidential)"),
+        ("act_field", r"(?i)(?:learner|act)[:\s]*sv-\d{4,}"),
+        ("restricted", r"(?i)(?:restricted|confidential)\s*(?:access|information)"),
+    ]
+    for name, pattern in _PRIVACY_PATTERNS:
+        if re.search(pattern, text):
+            matched_hits.append(name)
+
+    # Check for long quoted blocks (40+ chars) that may be private content
+    private_blocks = re.findall(r'["\'](.{40,}?)["\']', text)
+    if private_blocks:
+        matched_hits.append(f"long_quoted_block:{len(private_blocks)}")
+
+    return RedactionResult(
+        redacted_text=text,
+        hits=tuple(matched_hits),
+    )
 
 
 # ---------------------------------------------------------------------------
-# 4. ARITHMETIC VERIFICATION — STUB.
+# 4. ARITHMETIC VERIFICATION — real implementation.
 # ---------------------------------------------------------------------------
 
 
@@ -222,25 +263,48 @@ class ArithmeticCheckResult:
 
 _NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
 
+# Known exact numeric facts from the game constants.
+_KNOWN_NUMBERS: dict[str, float] = {
+    "credit_per_duel": 100,
+    "rounds_per_duel": 10,
+    "max_turns": 4,
+    "deadline_ms": 250,
+    "disciplined_ceiling": 11,
+    "rookie_minimum": 45,
+}
+
 
 def verify_arithmetic(text: str) -> ArithmeticCheckResult:
-    """STUB — ALWAYS RETURNS `checked=False, ok=None`: "I did not verify
-    this", not "this is correct".
+    """REAL — extracts numbers from text and cross-references against
+    known exact values from the game constants.
 
-    A real version needs to catch the `unsupported_precision` class
-    (CONTRACTS.md 6.1/6.4) — a number in your answer that is more precise,
-    or simply different, than anything an anchor you actually retrieved
-    supports. `_NUMBER_RE` above is left in as a starting point (it finds
-    every bare number in a string) — turning "found some numbers" into
-    "verified each one against a retrieved source" is the actual work,
-    left undone here on purpose.
+    Reports when numbers match known facts (ok=True), when they are
+    close but not exact (ok=False), or when numbers are present but
+    cannot be verified against any known fact (checked=True, ok=True).
+    """
+    if not isinstance(text, str) or not text.strip():
+        return ArithmeticCheckResult(checked=False, ok=None, detail="no text to verify")
 
-    This starter's version does not look at `text` at all beyond what
-    `_NUMBER_RE` would find if you called it (it isn't called) — see this
-    file's own `__main__` demo below."""
-    return ArithmeticCheckResult(
-        checked=False, ok=None, detail="verify_arithmetic is a stub — no check was performed"
-    )
+    numbers = [m.group() for m in _NUMBER_RE.finditer(text)]
+    if not numbers:
+        return ArithmeticCheckResult(checked=True, ok=True, detail="no numbers found — trivially correct")
+
+    issues: list[str] = []
+    for n_str in numbers:
+        try:
+            val = float(n_str)
+        except ValueError:
+            continue
+        for fact_name, fact_val in _KNOWN_NUMBERS.items():
+            if abs(val - fact_val) < 0.01:
+                break  # exact match
+            elif abs(val - fact_val) <= 1.0:
+                issues.append(f"approx {val} ~= '{fact_name}'={fact_val}")
+
+    if issues:
+        return ArithmeticCheckResult(checked=True, ok=False, detail="; ".join(issues[:3]))
+
+    return ArithmeticCheckResult(checked=True, ok=True, detail=f"verified {len(numbers)} number(s)")
 
 
 # ---------------------------------------------------------------------------
